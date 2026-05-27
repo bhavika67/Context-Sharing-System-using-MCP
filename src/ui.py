@@ -1,14 +1,5 @@
 """
-ui.py — Gradio UI for MCP Context Sharing System
-────────────────────────────────────────────────────
-Tabs:
-  1. Chat      — Talk to OpenAI with injected MCP context
-  2. Context   — Store / retrieve / search / delete entries
-  3. Namespaces— Browse all namespaces and their entries
-  4. Stats     — Server health dashboard
-
-Run:
-    python src/ui.py
+ui.py — Gradio 6 UI for MCP Context Sharing System
 """
 
 import asyncio
@@ -25,7 +16,6 @@ from openai import AsyncOpenAI
 
 load_dotenv()
 
-# ── Config ──────────────────────────────────────────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o")
 DB_PATH        = os.getenv("CONTEXT_DB_PATH", "context_store.db")
@@ -35,7 +25,7 @@ RATE_LIMIT     = int(os.getenv("RATE_LIMIT_PER_MIN", "60"))
 
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# ── DB helpers (same as server) ──────────────────────────────────────────────
+# ── DB helpers ───────────────────────────────────────────────────────────────
 def _get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -68,11 +58,11 @@ def _expires_at(ttl: int) -> Optional[str]:
         return None
     return datetime.fromtimestamp(time.time() + ttl, tz=timezone.utc).isoformat()
 
-# ── Context CRUD ─────────────────────────────────────────────────────────────
+# ── CRUD ─────────────────────────────────────────────────────────────────────
 def db_set(namespace, key, value, tags="", ttl=0):
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
     now = _now()
-    exp = _expires_at(ttl)
+    exp = _expires_at(int(ttl))
     with _get_db() as db:
         existing = db.execute(
             "SELECT key FROM context WHERE namespace=? AND key=?", (namespace, key)
@@ -82,13 +72,13 @@ def db_set(namespace, key, value, tags="", ttl=0):
                 "UPDATE context SET value=?, tags=?, updated_at=?, expires_at=? WHERE namespace=? AND key=?",
                 (value, json.dumps(tag_list), now, exp, namespace, key)
             )
-            return f"✅ Updated '{key}' in '{namespace}'" + (f" (TTL: {ttl}s)" if ttl else "")
+            return f" Updated '{key}' in '{namespace}'" + (f" (TTL: {ttl}s)" if ttl else "")
         else:
             db.execute(
                 "INSERT INTO context VALUES (?,?,?,?,?,?,?,?)",
                 (namespace, key, value, json.dumps(tag_list), now, now, exp, None)
             )
-            return f"✅ Created '{key}' in '{namespace}'" + (f" (TTL: {ttl}s)" if ttl else "")
+            return f" Created '{key}' in '{namespace}'" + (f" (TTL: {ttl}s)" if ttl else "")
 
 def db_get(namespace, key):
     with _get_db() as db:
@@ -97,11 +87,11 @@ def db_get(namespace, key):
             (namespace, key)
         ).fetchone()
     if not row:
-        return f"❌ Key '{key}' not found in '{namespace}'."
+        return f" Key '{key}' not found in '{namespace}'."
     if _is_expired(row["expires_at"]):
         with _get_db() as db:
             db.execute("DELETE FROM context WHERE namespace=? AND key=?", (namespace, key))
-        return f"⏰ Key '{key}' has expired and was removed."
+        return f" Key '{key}' has expired."
     return row["value"]
 
 def db_list(namespace, tag_filter=""):
@@ -110,8 +100,7 @@ def db_list(namespace, tag_filter=""):
             "SELECT key, value, tags, updated_at, expires_at FROM context WHERE namespace=?",
             (namespace,)
         ).fetchall()
-    results = []
-    expired = []
+    results, expired = [], []
     for row in rows:
         if _is_expired(row["expires_at"]):
             expired.append(row["key"])
@@ -119,9 +108,6 @@ def db_list(namespace, tag_filter=""):
         tag_list = json.loads(row["tags"])
         if tag_filter and tag_filter not in tag_list:
             continue
-        exp_str = ""
-        if row["expires_at"]:
-            exp_str = f" ⏰ expires {row['expires_at'][:19]}"
         results.append({
             "key": row["key"],
             "tags": ", ".join(tag_list) or "—",
@@ -142,14 +128,13 @@ def db_delete(namespace, key):
         cursor = db.execute(
             "DELETE FROM context WHERE namespace=? AND key=?", (namespace, key)
         )
-    if cursor.rowcount == 0:
-        return f"❌ Key '{key}' not found in '{namespace}'."
-    return f"🗑️ Deleted '{key}' from '{namespace}'."
+    return f" Deleted '{key}'." if cursor.rowcount else f"❌ Key '{key}' not found."
 
 def db_search(namespace, query):
     with _get_db() as db:
         rows = db.execute(
-            "SELECT key, value, tags, expires_at FROM context WHERE namespace=? AND (value LIKE ? OR key LIKE ?)",
+            "SELECT key, value, tags, expires_at FROM context "
+            "WHERE namespace=? AND (value LIKE ? OR key LIKE ?)",
             (namespace, f"%{query}%", f"%{query}%")
         ).fetchall()
     return [
@@ -169,15 +154,15 @@ def db_stats():
     with _get_db() as db:
         total   = db.execute("SELECT COUNT(*) as n FROM context").fetchone()["n"]
         ns_cnt  = db.execute("SELECT COUNT(DISTINCT namespace) as n FROM context").fetchone()["n"]
-        now     = _now()
         expired = db.execute(
-            "SELECT COUNT(*) as n FROM context WHERE expires_at IS NOT NULL AND expires_at < ?", (now,)
+            "SELECT COUNT(*) as n FROM context WHERE expires_at IS NOT NULL AND expires_at < ?",
+            (_now(),)
         ).fetchone()["n"]
         tags_rows = db.execute("SELECT tags FROM context").fetchall()
+    from collections import Counter
     all_tags = []
     for r in tags_rows:
         all_tags.extend(json.loads(r["tags"]))
-    from collections import Counter
     top_tags = Counter(all_tags).most_common(5)
     return {
         "total_entries": total,
@@ -190,7 +175,7 @@ def db_stats():
         "model": OPENAI_MODEL,
     }
 
-# ── OpenAI chat ──────────────────────────────────────────────────────────────
+# ── OpenAI streaming ─────────────────────────────────────────────────────────
 async def _stream_chat(history, namespace):
     rows = db_list(namespace)
     if rows:
@@ -203,20 +188,17 @@ async def _stream_chat(history, namespace):
         system = "You are a helpful assistant."
 
     messages = [{"role": "system", "content": system}]
-    for h in history[:-1]:
-        messages.append({"role": "user",      "content": h[0]})
-        messages.append({"role": "assistant", "content": h[1] or ""})
+    for user_msg, bot_msg in history[:-1]:
+        messages.append({"role": "user", "content": user_msg})
+        messages.append({"role": "assistant", "content": bot_msg or ""})
     messages.append({"role": "user", "content": history[-1][0]})
 
     response = await openai_client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=messages,
-        stream=True,
+        model=OPENAI_MODEL, messages=messages, stream=True,
     )
     partial = ""
     async for chunk in response:
-        delta = chunk.choices[0].delta.content or ""
-        partial += delta
+        partial += chunk.choices[0].delta.content or ""
         yield partial
 
 def chat_respond(message, history, namespace):
@@ -229,10 +211,9 @@ def chat_respond(message, history, namespace):
         async for partial in _stream_chat(history, namespace):
             history[-1][1] = partial
             yield history, ""
-        yield history, ""
 
     loop = asyncio.new_event_loop()
-    gen  = run()
+    gen = run()
     try:
         while True:
             try:
@@ -243,12 +224,7 @@ def chat_respond(message, history, namespace):
     finally:
         loop.close()
 
-# ── Gradio UI ────────────────────────────────────────────────────────────────
-CSS = """
-.gr-button-primary { background: #1d9e75 !important; border-color: #1d9e75 !important; }
-.stat-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; text-align: center; }
-"""
-
+# ── UI ────────────────────────────────────────────────────────────────────────
 with gr.Blocks(title="MCP Context Sharing") as app:
 
     gr.Markdown("# MCP Context Sharing System")
@@ -256,8 +232,8 @@ with gr.Blocks(title="MCP Context Sharing") as app:
 
     with gr.Tabs():
 
-        # ── Tab 1: Chat ──────────────────────────────────────────────────────
-        with gr.Tab("💬 Chat"):
+        # Tab 1: Chat
+        with gr.Tab(" Chat"):
             with gr.Row():
                 chat_ns = gr.Dropdown(
                     choices=["default", "project-alpha", "team-standup", "user-42"],
@@ -268,29 +244,26 @@ with gr.Blocks(title="MCP Context Sharing") as app:
                 )
                 with gr.Column(scale=3):
                     gr.Markdown(
-                        "**How it works:** Every message automatically pulls all stored context "
-                        "from the selected namespace and injects it into the OpenAI system prompt."
+                        "Every message pulls context from the selected namespace "
+                        "and injects it into the OpenAI system prompt automatically."
                     )
 
-            chatbot = gr.Chatbot(height=420, show_label=False, bubble_full_width=False)
+            chatbot = gr.Chatbot(height=420, show_label=False)
             with gr.Row():
                 msg_box = gr.Textbox(
-                    placeholder="Ask anything — context from the namespace is injected automatically…",
+                    placeholder="Ask anything — stored context is injected automatically…",
                     show_label=False,
                     scale=5,
                 )
                 send_btn = gr.Button("Send", variant="primary", scale=1)
             clear_btn = gr.Button("Clear chat", size="sm")
 
-            def clear_chat():
-                return [], ""
-
             send_btn.click(chat_respond, [msg_box, chatbot, chat_ns], [chatbot, msg_box])
             msg_box.submit(chat_respond, [msg_box, chatbot, chat_ns], [chatbot, msg_box])
-            clear_btn.click(clear_chat, outputs=[chatbot, msg_box])
+            clear_btn.click(lambda: ([], ""), outputs=[chatbot, msg_box])
 
-        # ── Tab 2: Context Manager ───────────────────────────────────────────
-        with gr.Tab("🗂️ Context Manager"):
+        # Tab 2: Context Manager
+        with gr.Tab(" Context Manager"):
             with gr.Row():
                 with gr.Column(scale=1):
                     gr.Markdown("### Store context")
@@ -298,7 +271,7 @@ with gr.Blocks(title="MCP Context Sharing") as app:
                     key_input = gr.Textbox(label="Key")
                     val_input = gr.Textbox(label="Value", lines=4)
                     tag_input = gr.Textbox(label="Tags (comma-separated)", placeholder="goal,important")
-                    ttl_input = gr.Number(label="TTL seconds (0 = never expires)", value=0, precision=0)
+                    ttl_input = gr.Number(label="TTL seconds (0 = never)", value=0, precision=0)
                     set_btn   = gr.Button("Store", variant="primary")
                     set_out   = gr.Textbox(label="Result", interactive=False)
 
@@ -331,13 +304,11 @@ with gr.Blocks(title="MCP Context Sharing") as app:
 
             def do_set(ns, key, val, tags, ttl):
                 if not key or not val:
-                    return "⚠️ Key and Value are required."
+                    return " Key and Value are required."
                 return db_set(ns, key, val, tags, int(ttl))
 
             def do_list(ns, tag):
                 rows = db_list(ns, tag)
-                if not rows:
-                    return []
                 return [[r["key"], r["tags"], r["updated"], r["expiry"], r["preview"]] for r in rows]
 
             def do_search(ns, query):
@@ -352,8 +323,8 @@ with gr.Blocks(title="MCP Context Sharing") as app:
             get_btn.click(lambda ns, k: db_get(ns, k), [gd_ns, gd_key], gd_out)
             del_btn.click(lambda ns, k: db_delete(ns, k), [gd_ns, gd_key], gd_out)
 
-        # ── Tab 3: Namespaces ────────────────────────────────────────────────
-        with gr.Tab("🗃️ Namespaces"):
+        # Tab 3: Namespaces
+        with gr.Tab(" Namespaces"):
             gr.Markdown("### All namespaces")
             ns_table = gr.Dataframe(
                 headers=["namespace", "entries"],
@@ -383,49 +354,46 @@ with gr.Blocks(title="MCP Context Sharing") as app:
 
             def do_share(key, src, dst, new_key):
                 if not key or not src or not dst:
-                    return "⚠️ Key, source and target namespace are required."
+                    return " Key, source and target namespace are required."
                 with _get_db() as db:
                     row = db.execute(
                         "SELECT * FROM context WHERE namespace=? AND key=?", (src, key)
                     ).fetchone()
                     if not row:
-                        return f"❌ Key '{key}' not found in '{src}'."
+                        return f" Key '{key}' not found in '{src}'."
                     dest_key = new_key.strip() or key
                     db.execute(
                         "INSERT OR REPLACE INTO context VALUES (?,?,?,?,?,?,?,?)",
                         (dst, dest_key, row["value"], row["tags"],
                          row["created_at"], _now(), row["expires_at"], f"{src}/{key}")
                     )
-                return f"✅ Shared '{key}' from '{src}' → '{dest_key}' in '{dst}'."
+                return f" Shared '{key}' from '{src}' → '{dest_key}' in '{dst}'."
 
             def do_clear_ns(ns):
                 if not ns:
-                    return "⚠️ Namespace is required."
+                    return " Namespace is required."
                 with _get_db() as db:
                     cursor = db.execute("DELETE FROM context WHERE namespace=?", (ns,))
-                return f"🗑️ Cleared '{ns}' ({cursor.rowcount} entries removed)."
+                return f" Cleared '{ns}' ({cursor.rowcount} entries removed)."
 
             refresh_ns_btn.click(do_ns_list, outputs=ns_table)
             share_btn.click(do_share, [share_key, share_src, share_dst, share_newkey], share_out)
             clear_ns_btn.click(do_clear_ns, [clear_ns_input], clear_ns_out)
             app.load(do_ns_list, outputs=ns_table)
 
-        # ── Tab 4: Stats ─────────────────────────────────────────────────────
-        with gr.Tab("📊 Stats"):
+        # Tab 4: Stats
+        with gr.Tab(" Stats"):
             gr.Markdown("### Server health")
             refresh_stats_btn = gr.Button("Refresh stats")
-
             with gr.Row():
                 stat_total = gr.Textbox(label="Total entries",   interactive=False)
                 stat_ns    = gr.Textbox(label="Namespaces",      interactive=False)
                 stat_exp   = gr.Textbox(label="Expired pending", interactive=False)
                 stat_auth  = gr.Textbox(label="Auth enabled",    interactive=False)
-
             with gr.Row():
-                stat_model = gr.Textbox(label="OpenAI model",    interactive=False)
-                stat_rate  = gr.Textbox(label="Rate limit/min",  interactive=False)
-                stat_db    = gr.Textbox(label="Database path",   interactive=False)
-
+                stat_model = gr.Textbox(label="OpenAI model",   interactive=False)
+                stat_rate  = gr.Textbox(label="Rate limit/min", interactive=False)
+                stat_db    = gr.Textbox(label="Database path",  interactive=False)
             stat_tags = gr.Textbox(label="Top tags", interactive=False)
 
             def do_stats():
@@ -435,30 +403,24 @@ with gr.Blocks(title="MCP Context Sharing") as app:
                     str(s["total_entries"]),
                     str(s["namespaces"]),
                     str(s["expired_pending"]),
-                    "Yes 🔒" if s["auth_enabled"] else "No 🔓",
+                    "Yes " if s["auth_enabled"] else "No ",
                     s["model"],
                     str(s["rate_limit"]),
                     s["db_path"],
                     tags_str,
                 )
 
-            refresh_stats_btn.click(
-                do_stats,
-                outputs=[stat_total, stat_ns, stat_exp, stat_auth,
-                         stat_model, stat_rate, stat_db, stat_tags]
-            )
-            app.load(
-                do_stats,
-                outputs=[stat_total, stat_ns, stat_exp, stat_auth,
-                         stat_model, stat_rate, stat_db, stat_tags]
-            )
+            outputs = [stat_total, stat_ns, stat_exp, stat_auth,
+                       stat_model, stat_rate, stat_db, stat_tags]
+            refresh_stats_btn.click(do_stats, outputs=outputs)
+            app.load(do_stats, outputs=outputs)
 
-# ── Launch ───────────────────────────────────────────────────────────────────
+# ── Launch ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.launch(
-        theme=gr.themes.Soft(),
         server_name="0.0.0.0",
         server_port=7860,
         share=False,
         show_error=True,
+        theme=gr.themes.Soft(),
     )
