@@ -6,6 +6,7 @@
 ## Contributors
 
 **Bhavika** — Developer & AI
+
 **Shams** — Collaborator
 
 ---
