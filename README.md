@@ -14,6 +14,7 @@
 
 ## Project Structure
 
+```
 Context Sharing System using MCP/
 ├── src/
 │   ├── client/
@@ -53,8 +54,9 @@ Context Sharing System using MCP/
 │       └── app.py                 ← Gradio UI entry point
 ├── .env                           ← All config goes here
 ├── context_store.db               ← Auto-created SQLite database
-├── requirements.txt               ← Python dependencies 
+├── requirements.txt               ← Python dependencies
 └── README.md
+```
 
 ---
 
@@ -114,19 +116,24 @@ API_BASE_URL=http://localhost:8000
 
 ### Gradio Web UI (recommended)
 
-Open **two PowerShell terminals**:
+Open **three PowerShell terminals**:
 
-**Terminal 1 — FastAPI + MCP Server:**
+**Terminal 1 — MCP Server:**
 ```powershell
 cd "D:\Context Sharing System using MCP"
-python src/api.py
+python src/mcp/server.py
 ```
 Wait for: ` MCP server connected`
 
 **Terminal 2 — Gradio UI:**
 ```powershell
 cd "D:\Context Sharing System using MCP"
-python src/ui.py
+python src/ui/app.py
+```
+**Terminal 3 — FastAPI + MCP Server:**
+```powershell
+cd "D:\Context Sharing System using MCP"
+python src/server/app.py
 ```
 
 Then open in browser:
@@ -140,7 +147,7 @@ python src/openai_with_context.py
 
 ### Interactive terminal chat
 ```powershell
-python src/chat.py
+python src/mcp/client_chat.py
 ```
 
 ---
