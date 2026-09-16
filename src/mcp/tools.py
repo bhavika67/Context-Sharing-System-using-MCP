@@ -1,222 +1,258 @@
 """
-tools.py — All MCP tools (set, get, list, delete, search, share, namespaces, stats)
+tools.py — All MCP tools (save, get, list, delete, search, share, domains, stats)
 Registered on the FastMCP instance passed in from server.py
 """
-
 import json
 from typing import Optional
 
 from mcp_config import API_KEY, DEFAULT_TTL, RATE_LIMIT, DB_PATH, TRANSPORT
 from auth import check_auth, check_rate
 from database import (
-    upsert_entry, fetch_entry, remove_entry, fetch_namespace,
-    remove_expired_keys, search_entries, copy_entry,
-    fetch_all_namespaces, remove_namespace, fetch_stats,
+    upsert_memory, fetch_memory, remove_memory, fetch_domain,
+    remove_expired_memories, search_memories, copy_memory,
+    fetch_all_domains, remove_domain, fetch_memory_stats,
     expires_at, is_expired,
+    add_memory_link, fetch_memory_links,
 )
 from logger import logger
+from .jira_tools import register_jira_tools
 
 
 def register_tools(mcp):
     """Register all tools onto the FastMCP instance."""
 
+    # Register Jira-specific tools
+    register_jira_tools(mcp)
+
     @mcp.tool()
-    def set_context(
-        key: str,
+    def save_memory(
+        concept: str,
         value: str,
-        namespace: str = "default",
+        domain: str = "default",
         tags: str = "",
         ttl_seconds: int = 0,
         api_key: str = "",
+        metadata_json: str = "{}",
     ) -> str:
-        """Store a value. Optionally set TTL (seconds until expiry, 0=forever)."""
-        # FIX 1: Strip namespace and key to prevent leading/trailing space bugs
-        namespace = namespace.strip()
-        key = key.strip()
+        """Store a memory. Optionally set TTL (seconds until expiry, 0=forever)."""
+        # Strip domain and concept to prevent leading/trailing space bugs
+        domain = domain.strip()
+        concept = concept.strip()
 
         if not check_auth(api_key):
-            logger.warning({"action": "set_context", "result": "auth_failed", "namespace": namespace, "key": key})
+            logger.warning({"action": "save_memory", "result": "auth_failed", "domain": domain, "concept": concept})
             return "Error: Invalid API key."
         if not check_rate():
             return "Error: Rate limit exceeded. Try again in a minute."
 
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-        # FIX 2: ttl_seconds=0 means "no expiry" — do NOT fall back to DEFAULT_TTL
+        # ttl_seconds=0 means "no expiry"
         effective_ttl = ttl_seconds if ttl_seconds > 0 else 0
-        exp = expires_at(effective_ttl)  # expires_at(0) returns None → stored forever
-        action = upsert_entry(namespace, key, value, tag_list, exp)
+        exp = expires_at(effective_ttl)
 
-        logger.info({"action": "set_context", "namespace": namespace, "key": key, "result": action})
+        try:
+            meta = json.loads(metadata_json) if metadata_json else {}
+        except json.JSONDecodeError:
+            meta = {"error": "Invalid metadata JSON"}
+
+        action = upsert_memory(domain, concept, value, tag_list, exp, metadata=meta)
+
+        logger.info({"action": "save_memory", "domain": domain, "concept": concept, "result": action})
         ttl_note = f" (expires in {effective_ttl}s)" if exp else ""
-        return f"{action.capitalize()} '{key}' in '{namespace}'{ttl_note}."
+        return f"{action.capitalize()} '{concept}' in '{domain}'{ttl_note}."
 
 
     @mcp.tool()
-    def get_context(key: str, namespace: str = "default", api_key: str = "") -> str:
-        """Retrieve a value by key."""
-        # FIX: Strip to match stored keys correctly
-        namespace = namespace.strip()
-        key = key.strip()
+    def get_memory(concept: str, domain: str = "default", api_key: str = "") -> str:
+        """Retrieve a memory by concept."""
+        domain = domain.strip()
+        concept = concept.strip()
 
         if not check_auth(api_key):
             return "Error: Invalid API key."
         if not check_rate():
             return "Error: Rate limit exceeded."
 
-        row = fetch_entry(namespace, key)
+        row = fetch_memory(domain, concept)
         if not row:
-            return f"Key '{key}' not found in '{namespace}'."
+            return f"Concept '{concept}' not found in '{domain}'."
         if is_expired(row["expires_at"]):
-            remove_entry(namespace, key)
-            return f"Key '{key}' has expired and was removed."
+            remove_memory(domain, concept)
+            return f"Concept '{concept}' has expired and was removed."
 
-        logger.info({"action": "get_context", "namespace": namespace, "key": key})
-        return row["value"]
+        logger.info({"action": "get_memory", "domain": domain, "concept": concept})
+
+        # Return value along with links and metadata
+        return json.dumps({
+            "value": row["value"],
+            "links": json.loads(row["links"]),
+            "metadata": json.loads(row["metadata"])
+        }, indent=2)
 
 
     @mcp.tool()
-    def list_context(namespace: str = "default", tag_filter: str = "", api_key: str = "") -> str:
-        """List all keys in a namespace. Expired entries are auto-removed."""
-        # FIX: Strip namespace so " project-alpha" and "project-alpha" resolve the same
-        namespace = namespace.strip()
+    def list_memories(domain: str = "default", tag_filter: str = "", api_key: str = "") -> str:
+        """List all concepts in a domain. Expired entries are auto-removed."""
+        domain = domain.strip()
 
         if not check_auth(api_key):
             return "Error: Invalid API key."
         if not check_rate():
             return "Error: Rate limit exceeded."
 
-        rows = fetch_namespace(namespace)
+        rows = fetch_domain(domain)
         results = []
-        expired_keys = []
+        expired_concepts = []
 
         for row in rows:
             if is_expired(row["expires_at"]):
-                expired_keys.append(row["key"])
+                expired_concepts.append(row["concept"])
                 continue
             tag_list = json.loads(row["tags"])
             if tag_filter and tag_filter not in tag_list:
                 continue
             results.append({
-                "key": row["key"],
+                "concept": row["concept"],
                 "tags": tag_list,
                 "updated_at": row["updated_at"],
                 "expires_at": row["expires_at"],
                 "preview": row["value"][:100] + ("…" if len(row["value"]) > 100 else ""),
             })
 
-        if expired_keys:
-            remove_expired_keys(namespace, expired_keys)
+        if expired_concepts:
+            remove_expired_memories(domain, expired_concepts)
 
         if not results:
-            return f"No entries in namespace '{namespace}'" + (f" with tag '{tag_filter}'" if tag_filter else "") + "."
+            return f"No memories in domain '{domain}'" + (f" with tag '{tag_filter}'" if tag_filter else "") + "."
         return json.dumps(results, indent=2)
 
 
     @mcp.tool()
-    def delete_context(key: str, namespace: str = "default", api_key: str = "") -> str:
-        """Delete a context entry."""
-        # FIX: Strip to match stored keys correctly
-        namespace = namespace.strip()
-        key = key.strip()
+    def delete_memory(concept: str, domain: str = "default", api_key: str = "") -> str:
+        """Delete a memory entry."""
+        domain = domain.strip()
+        concept = concept.strip()
 
         if not check_auth(api_key):
             return "Error: Invalid API key."
 
-        count = remove_entry(namespace, key)
+        count = remove_memory(domain, concept)
         if count == 0:
-            return f"Key '{key}' not found in '{namespace}'."
-        logger.info({"action": "delete_context", "namespace": namespace, "key": key})
-        return f"Deleted '{key}' from '{namespace}'."
+            return f"Concept '{concept}' not found in '{domain}'."
+        logger.info({"action": "delete_memory", "domain": domain, "concept": concept})
+        return f"Deleted '{concept}' from '{domain}'."
 
 
     @mcp.tool()
-    def search_context(query: str, namespace: str = "default", api_key: str = "") -> str:
-        """Full-text search across all values in a namespace."""
-        # FIX: Strip namespace for consistent lookup
-        namespace = namespace.strip()
+    def search_memories(query: str, domain: str = "default", api_key: str = "") -> str:
+        """Full-text search across all values in a domain."""
+        domain = domain.strip()
 
         if not check_auth(api_key):
             return "Error: Invalid API key."
         if not check_rate():
             return "Error: Rate limit exceeded."
 
-        rows = search_entries(namespace, query)
+        rows = search_memories(domain, query)
         matches = [
-            {"key": r["key"], "tags": json.loads(r["tags"]), "preview": r["value"][:100]}
+            {"concept": r["concept"], "tags": json.loads(r["tags"]), "preview": r["value"][:100]}
             for r in rows if not is_expired(r["expires_at"])
         ]
         if not matches:
-            return f"No matches for '{query}' in '{namespace}'."
+            return f"No matches for '{query}' in '{domain}'."
         return json.dumps(matches, indent=2)
 
 
     @mcp.tool()
-    def share_context(
-        key: str,
-        source_namespace: str,
-        target_namespace: str,
-        new_key: Optional[str] = None,
+    def share_memory(
+        concept: str,
+        source_domain: str,
+        target_domain: str,
+        new_concept: Optional[str] = None,
         api_key: str = "",
     ) -> str:
-        """Copy a context entry from one namespace to another."""
-        # FIX: Strip all namespace/key inputs
-        source_namespace = source_namespace.strip()
-        target_namespace = target_namespace.strip()
-        key = key.strip()
+        """Copy a memory entry from one domain to another."""
+        source_domain = source_domain.strip()
+        target_domain = target_domain.strip()
+        concept = concept.strip()
 
         if not check_auth(api_key):
             return "Error: Invalid API key."
 
-        dest_key = (new_key.strip() if new_key else None) or key
-        row = copy_entry(source_namespace, key, target_namespace, dest_key)
+        dest_concept = (new_concept.strip() if new_concept else None) or concept
+        row = copy_memory(source_domain, concept, target_domain, dest_concept)
         if row is None:
-            return f"Key '{key}' not found in '{source_namespace}'."
+            return f"Concept '{concept}' not found in '{source_domain}'."
         if is_expired(row["expires_at"]):
-            return f"Key '{key}' has expired."
+            return f"Concept '{concept}' has expired."
 
-        logger.info({"action": "share_context", "from": f"{source_namespace}/{key}", "to": f"{target_namespace}/{dest_key}"})
-        return f"Shared '{key}' from '{source_namespace}' → '{dest_key}' in '{target_namespace}'."
+        logger.info({"action": "share_memory", "from": f"{source_domain}/{concept}", "to": f"{target_domain}/{dest_concept}"})
+        return f"Shared '{concept}' from '{source_domain}' → '{dest_concept}' in '{target_domain}'."
 
 
     @mcp.tool()
-    def list_namespaces(api_key: str = "") -> str:
-        """List all namespaces and their entry counts."""
+    def list_domains(api_key: str = "") -> str:
+        """List all domains and their memory counts."""
         if not check_auth(api_key):
             return "Error: Invalid API key."
 
-        rows = fetch_all_namespaces()
+        rows = fetch_all_domains()
         if not rows:
-            return "No namespaces yet."
-        return json.dumps({r["namespace"]: r["count"] for r in rows}, indent=2)
+            return "No domains yet."
+        return json.dumps({r["domain"]: r["count"] for r in rows}, indent=2)
 
 
     @mcp.tool()
-    def clear_namespace(namespace: str, api_key: str = "") -> str:
-        """Delete all entries in a namespace."""
-        # FIX: Strip namespace
-        namespace = namespace.strip()
+    def clear_domain(domain: str, api_key: str = "") -> str:
+        """Delete all memories in a domain."""
+        domain = domain.strip()
 
         if not check_auth(api_key):
             return "Error: Invalid API key."
 
-        count = remove_namespace(namespace)
-        logger.info({"action": "clear_namespace", "namespace": namespace, "deleted": count})
-        return f"Cleared '{namespace}' ({count} entries removed)."
+        count = remove_domain(domain)
+        logger.info({"action": "clear_domain", "domain": domain, "deleted": count})
+        return f"Cleared '{domain}' ({count} entries removed)."
 
 
     @mcp.tool()
     def server_stats(api_key: str = "") -> str:
-        """Return server stats: total entries, namespaces, expired count."""
+        """Return server stats: total memories, domains, expired count."""
         if not check_auth(api_key):
             return "Error: Invalid API key."
 
-        stats = fetch_stats()
+        stats = fetch_memory_stats()
         return json.dumps({
-            "total_entries": stats["total"],
-            "namespaces": stats["namespaces"],
+            "total_memories": stats["total"],
+            "domains": stats["domains"],
             "expired_pending_cleanup": stats["expired"],
             "rate_limit_per_min": RATE_LIMIT,
             "auth_enabled": bool(API_KEY),
             "db_path": DB_PATH,
             "transport": TRANSPORT,
         }, indent=2)
+
+    @mcp.tool()
+    def link_memories(
+        source_domain: str,
+        source_concept: str,
+        target_domain: str,
+        target_concept: str,
+        api_key: str = "",
+    ) -> str:
+        """Create a relational link between two memories."""
+        if not check_auth(api_key):
+            return "Error: Invalid API key."
+
+        try:
+            success = add_memory_link(
+                source_domain.strip(), source_concept.strip(),
+                target_domain.strip(), target_concept.strip()
+            )
+            if success:
+                logger.info({"action": "link_memories", "source": f"{source_domain}/{source_concept}", "target": f"{target_domain}/{target_concept}"})
+                return f"Successfully linked '{source_concept}' → '{target_concept}'."
+            else:
+                return f"Link already exists between '{source_concept}' and '{target_concept}'."
+        except ValueError as e:
+            return f"Error: {str(e)}"

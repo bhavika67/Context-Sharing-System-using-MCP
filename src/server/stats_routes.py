@@ -8,11 +8,13 @@ stays decoupled from chat state.
 import json
 from typing import Callable
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from mcp_client import mcp_call
+from responses import wrap_response
+from auth import validate_api_key
 
-router = APIRouter(tags=["stats"])
+router = APIRouter(tags=["stats"], dependencies=[Depends(validate_api_key)])
 
 # Injected by app.py after both this module and chat_routes are imported
 _get_histories: Callable[[], dict] = lambda: {}
@@ -33,4 +35,4 @@ async def stats():
         data = {"raw": result}
 
     data["memory_turns"] = sum(len(h) for h in _get_histories().values()) // 2
-    return data
+    return wrap_response(data=data)

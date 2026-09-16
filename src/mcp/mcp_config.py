@@ -26,3 +26,8 @@ LOG_FILE  = str(MCP_DIR / os.getenv("LOG_FILE", "mcp_server.log"))
 API_KEY     = os.getenv("MCP_API_KEY", "")
 RATE_LIMIT  = int(os.getenv("MCP_RATE_LIMIT", "60"))
 DEFAULT_TTL = int(os.getenv("MCP_DEFAULT_TTL", "3600"))
+
+# Jira Integration
+JIRA_URL        = os.getenv("JIRA_URL", "")
+JIRA_USER_EMAIL = os.getenv("JIRA_USER_EMAIL", "")
+JIRA_API_TOKEN  = os.getenv("JIRA_API_TOKEN", "")

@@ -2,14 +2,14 @@
 app.py — FastAPI application entry point
 ─────────────────────────────────────────
 Architecture:
-    Gradio UI → FastAPI (port 8000) → MCP Server → SQLite
+    Next.js UI → FastAPI (port 8000) → MCP Server → SQLite
 
 Module layout:
     config.py            — env vars & settings
     models.py            — Pydantic request models
     mcp_client.py        — MCP session lifecycle + mcp_call()
-    context_routes.py    — /context/* endpoints
-    namespace_routes.py  — /namespaces/* endpoints
+    memory_routes.py     — /memory/* endpoints
+    domain_routes.py     — /domains/* endpoints
     chat_routes.py       — /chat endpoints + conversation history
     stats_routes.py      — /stats endpoint
 
@@ -26,8 +26,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from server_config import settings
 from mcp_client import lifespan
-import context_routes
-import namespace_routes
+import memory_routes
+import domain_routes
 import chat_routes
 import stats_routes
 
@@ -41,15 +41,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Hardened CORS: Restrict origins to the trusted frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",  # Next.js dev server
+        "http://127.0.0.1:3000",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(context_routes.router)
-app.include_router(namespace_routes.router)
+app.include_router(memory_routes.router)
+app.include_router(domain_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(stats_routes.router)
 
