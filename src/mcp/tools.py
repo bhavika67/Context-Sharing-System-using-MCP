@@ -15,7 +15,7 @@ from database import (
     add_memory_link, fetch_memory_links,
 )
 from logger import logger
-from .jira_tools import register_jira_tools
+from jira_tools import register_jira_tools
 
 
 def register_tools(mcp):
